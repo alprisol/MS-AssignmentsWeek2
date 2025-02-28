@@ -1,0 +1,24 @@
+# Ignore the venv fodler
+venv/
+
+# Ignore all files and folders starting with test_ and old_
+**/test_*
+**/old_*
+**/temp_*
+
+# Ignore the __pycache__ files:
+__pycache__/
+
+# Ignore the .vscode folder
+.vscode/
+
+#Ignore the all tempCodeRunnerFile.py
+**/tempCodeRunnerFile.py
+
+# Ignore all .zip files
+**/**.zip
+
+# Ignore all .docx and .tmp and PDFs files
+**/**.docx
+**/**.tmp
+**/**.pdf
