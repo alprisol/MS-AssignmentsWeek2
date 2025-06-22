@@ -87,7 +87,8 @@ def attitude_control_using_reaction_wheels_in_tethrahedron(
 def attitude_control_using_magnetic_torquers(tau_d_b, b_b, A, N, i_max):
     """
     Computes the actuation torque from magnetic torquers given the desired torque,
-    local magnetic field, coil area, number of turns, and maximum current.
+    local magnetic field, coil area, number of turns, and maximum current. Also returns
+    the saturated coil currents.
 
     Parameters
     ----------
@@ -106,16 +107,27 @@ def attitude_control_using_magnetic_torquers(tau_d_b, b_b, A, N, i_max):
     -------
     tau_a_b : numpy.ndarray
         Actuation torque computed from the magnetic torquer model (shape: (3,)).
+    currents : numpy.ndarray
+        Saturated currents for each coil (shape: (3,)).
     """
     tau_d_b = np.asarray(tau_d_b).flatten()
     b_b = np.asarray(b_b).flatten()
     norm_b2 = np.dot(b_b, b_b)
     if norm_b2 < 1e-8:
-        return np.zeros(3)
+        # If the magnetic field is nearly zero, return zeros for both outputs.
+        return np.zeros(3), np.zeros(3)
+
+    # Compute the magnetic moment required
     m_b = S(b_b) @ tau_d_b / norm_b2
+    # Calculate the currents from the magnetic moment
     currents = m_b / (N * A)
+    # Saturate the currents to the maximum allowable value
     currents_sat = np.clip(currents, -i_max, i_max)
+    # Compute the saturated magnetic moment
     m_b_sat = N * A * currents_sat
+    # Compute the actuation torque using the cross-product matrix S
     tau_b_m = S(m_b_sat) @ b_b
+    # Preserve the direction of the desired torque while using the magnitude from tau_b_m
     tau_a_b = np.sign(tau_d_b) * np.abs(tau_b_m)
-    return tau_a_b
+
+    return tau_a_b, currents_sat

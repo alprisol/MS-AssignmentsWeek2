@@ -230,6 +230,8 @@ def run_simulation(params, initial_state, t_span, n_steps):
         method="RK45",
         t_eval=np.linspace(t_span[0], t_span[1], n_steps),
         args=(params,),
+        atol=1e-4,
+        rtol=1e-2,
     )
     t = result.t
     state_vector = result.y

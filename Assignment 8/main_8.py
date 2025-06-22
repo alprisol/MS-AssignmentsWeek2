@@ -427,7 +427,7 @@ def main():
     # Plot quaternion evolution using the logged data
     plot_quaternion_evolution(
         filename=f"{directory_path}quaternion_evolution.png",
-        quaternion_log=data_log["q_ob_hat"],
+        quaternion_log=data_log["q_ob"],
         time_vector=data_log["time"],
     )
 

@@ -9,12 +9,6 @@ from scipy.integrate import solve_ivp
 def cumtrapz_custom(y, x, initial=0):
     """
     Compute the cumulative integral of y with respect to x using the trapezoidal rule.
-    Parameters:
-      y: array-like, the function values.
-      x: array-like, the sample points corresponding to y.
-      initial: float, initial value of the integration.
-    Returns:
-      cumulative integral array of the same length as y.
     """
     y = np.asarray(y)
     x = np.asarray(x)
@@ -68,10 +62,9 @@ from quest_algorithm_9 import (
     match_quaternion_sign_to_reference,
     measure_sensor,
 )
-
 from actuators_9 import (
     attitude_control_using_thrusters,
-    attitude_control_using_magnetic_torquers,
+    attitude_control_using_magnetic_torquers,  # Modified function returns (tau_a_b, coil_currents)
     attitude_control_using_reaction_wheels_in_tethrahedron,
 )
 
@@ -85,23 +78,10 @@ directory_path = "Assignment 9/"
 def satellite_dynamics(t, state, params):
     """
     Compute satellite dynamics including orbital propagation, attitude dynamics,
-    and actuation. The state vector structure depends on the actuator type.
-
-    For thrusters or magnetic torquers (actuator in {"thrusters", "magnetic_torquer"}):
-      state[0]   : True anomaly (rad)
-      state[1:5] : Quaternion (body with respect to orbit)
-      state[5:8] : Angular velocity in body frame (rad/s)
-
-    For reaction wheels (actuator == "reaction_wheel"):
-      state[0]   : True anomaly (rad)
-      state[1:5] : Quaternion (body with respect to orbit)
-      state[5:8] : Angular velocity in body frame (rad/s)
-      state[8:12]: Reaction wheel speeds (rad/s)
+    and actuation.
     """
     # Unpack state vector and parameters
     actuator = params.get("actuator", "thrusters")
-
-    # Unpack state vector based on actuator type.
     true_anomaly = state[0]
     q_ob = state[1:5]
     omega_b = state[5:8]
@@ -140,7 +120,6 @@ def satellite_dynamics(t, state, params):
     e = calculate_eccentricity(ra, rp)
     n = calculate_mean_motion(a, mu)
     true_anomaly_dot = calculate_true_anomaly_derivative(e, true_anomaly, n)
-
     M = n * (t - t0)
     E = calculate_eccentric_anomaly(M, e)
     R_pqw = calculate_rotation_matrix_from_inertial_to_pqw(arg_perigee, raan, incl)
@@ -159,7 +138,6 @@ def satellite_dynamics(t, state, params):
         arg_perigee, raan, incl, true_anomaly
     )
     R_i_o = calculate_rotation_matrix_from_quaternion(q_io)
-    # Compute body-to-orbit rotation matrix from the current attitude (q_ob)
     R_b_o = calculate_rotation_matrix_from_quaternion(q_ob).T
 
     # ----------------------------
@@ -178,17 +156,14 @@ def satellite_dynamics(t, state, params):
     # Sensor measurements (Magnetic field and Sun vector)
     # ----------------------------
     current_date = init_datetime + timedelta(seconds=t)
-    # Magnetic field measurement
     B_ENU, B_o = calculate_magnetic_field_in_orbit_frame(
         r_inertial, current_date, arg_perigee, true_anomaly, raan, incl, t
     )
     B_ENU, B_o = B_ENU * 1e9, B_o * 1e9  # Convert to nT
     B_b = R_b_o @ B_o
     B_b_mesured = measure_sensor(B_b, np.radians(5))
-    # Solar vector measurement
     s_i = calculate_advanced_sun_vector_model(t, init_datetime)
-    # Convert sun vector s_i from AU to km (1 AU = 149597870.7 km)
-    s_i = np.array(s_i) * 149597870.7
+    s_i = np.array(s_i) * 149597870.7  # Convert from AU to km
     s_o = R_i_o.T @ np.array(s_i)
     s_b = R_b_o @ s_o
     s_b_mesured = measure_sensor(s_b, np.radians(0.01))
@@ -205,18 +180,20 @@ def satellite_dynamics(t, state, params):
     # ----------------------------
     tau_d_b = pd_attitude_controller(q_ob, omega_b, quat_desired, omega_desired, kp, kd)
 
-    # Now choose which actuator to use based on the simulation parameters.
+    # ----------------------------
+    # Actuator selection and computation
+    # ----------------------------
     if actuator == "thrusters":
-        # Use thrusters (bang-bang actuation); note: max_thrust can be adjusted as desired.
         tau_a_b, thruster_firings = attitude_control_using_thrusters(
             tau_d_b, max_thrust=0.5
         )
     elif actuator == "magnetic_torquer":
-        # Use magnetic torquers; note: the function uses the local magnetic field B_b.
-        tau_a_b = attitude_control_using_magnetic_torquers(tau_d_b, B_b, A, N, i_max)
+        # Now capture both the actuation torque and the coil currents.
+        tau_a_b, coil_currents = attitude_control_using_magnetic_torquers(
+            tau_d_b, B_b, A, N, i_max
+        )
         thruster_firings = None
     elif actuator == "reaction_wheel":
-        # Use reaction wheels. For reaction wheels, the state vector must include wheel speeds.
         w_bw = state[8:12]
         w_bw_dot, tau_a_b = attitude_control_using_reaction_wheels_in_tethrahedron(
             tau_d_b, omega_b, w_bw, params["J_w"], params["max_RPM"]
@@ -274,8 +251,10 @@ def satellite_dynamics(t, state, params):
     # Log actuator-specific data
     if actuator == "thrusters":
         log_entry["thruster_firings"] = thruster_firings
-    if actuator == "reaction_wheel":
+    elif actuator == "reaction_wheel":
         log_entry["w_bw"] = w_bw
+    elif actuator == "magnetic_torquer":
+        log_entry["coil_currents"] = coil_currents
 
     # ----------------------------
     # Construct state derivative vector based on actuator type.
@@ -305,7 +284,6 @@ def run_simulation(params, initial_state, t_span, n_steps):
     t = result.t
     state_vector = result.y
 
-    # Build the data log dictionary.
     # Choose keys based on actuator type.
     actuator = params["actuator"]
     if actuator == "reaction_wheel":
@@ -381,6 +359,7 @@ def run_simulation(params, initial_state, t_span, n_steps):
             "s_o",
             "tau_d_b",
             "tau_a_b",
+            "coil_currents",
         ]
 
     data_log = {key: [] for key in keys}
@@ -396,7 +375,6 @@ def run_simulation(params, initial_state, t_span, n_steps):
 def get_simulation_params(mu_value, earth_radius, q_ob_init, actuator):
     """
     Set simulation parameters.
-    For reaction wheels, additional parameters (J_w and max_RPM) are provided.
     """
     params = {
         "iteration": 0,
@@ -420,7 +398,6 @@ def get_simulation_params(mu_value, earth_radius, q_ob_init, actuator):
         "A": 1.0,
         "i_max": 0.1,
     }
-    # For reaction wheels, add reaction wheel specific parameters.
     if params["actuator"] == "reaction_wheel":
         params["J_w"] = 0.1
         params["max_RPM"] = 20000
@@ -455,9 +432,6 @@ def plot_quaternion_evolution(
 def plot_attitude_evolution(
     filename, attitude_log, time_vector=None, title="Attitude Evolution (Euler Angles)"
 ):
-    """
-    Plots the satellite's attitude evolution in terms of Euler angles (roll, pitch, yaw).
-    """
     attitude_log = np.array(attitude_log)
     n_steps = attitude_log.shape[0]
     if time_vector is None:
@@ -479,14 +453,6 @@ def plot_attitude_evolution(
 def plot_reaction_wheel_speeds(
     filename, time_vector, reaction_wheel_log, title="Reaction Wheel Speeds Over Time"
 ):
-    """
-    Plots the reaction wheel speeds over time.
-
-    Parameters:
-        filename: Path to save the plot.
-        time_vector: Array of time values.
-        reaction_wheel_log: 2D array of reaction wheel speeds, each column corresponds to a wheel.
-    """
     reaction_wheel_log = np.array(reaction_wheel_log)
     plt.figure(figsize=(8, 5))
     for i in range(reaction_wheel_log.shape[1]):
@@ -546,13 +512,34 @@ def plot_propellant_consumption(
     plt.show()
 
 
+# --- New Plot Function for Coil Currents ---
+def plot_coil_currents(
+    filename, time_vector, coil_currents_log, title="Coil Currents Over Time"
+):
+    """
+    Plots the coil currents (one curve per coil) over time.
+    """
+    coil_currents_log = np.array(coil_currents_log)
+    plt.figure(figsize=(8, 5))
+    for i in range(coil_currents_log.shape[1]):
+        plt.plot(time_vector, coil_currents_log[:, i], label=f"Coil {i+1}")
+    plt.xlabel("Time (s)")
+    plt.ylabel("Current (A)")
+    plt.title(title)
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig(filename)
+    plt.show()
+
+
 # -------------------------------------------------------------------------------
 # Main function
 # -------------------------------------------------------------------------------
 def main():
 
-    # Select actuator type here: "thrusters", "magnetic_torquer", or "reaction_wheel"
-    actuator = "reaction_wheel"
+    # Set actuator type here. Choose between "thrusters", "reaction_wheel", or "magnetic_torquer".
+    actuator = "thrusters"
 
     # Constants
     mu_value = 398600.4418
@@ -564,7 +551,7 @@ def main():
     w_ob_b_init = np.array([0.0, 0.0, 0.0])
     w_bw0 = (2 * np.pi / 60) * np.array([2000, -3000, 5000, 1000])
 
-    # Get simulation parameters. Change the actuator type here if desired.
+    # Get simulation parameters.
     params = get_simulation_params(mu_value, earth_radius, q_ob_init, actuator)
 
     # Initial state based on actuator type.
@@ -582,12 +569,12 @@ def main():
     # Plot quaternion evolution with custom title.
     plot_quaternion_evolution(
         filename=f"{directory_path}quaternion_evolution_{actuator}.png",
-        quaternion_log=data_log["q_ob_hat"],
+        quaternion_log=data_log["q_ob"],
         time_vector=data_log["time"],
         title=f"{actuator.capitalize()} - Quaternion Evolution",
     )
 
-    # If thrusters are used, plot the thruster firings and propellant consumption.
+    # Plot actuator-specific data.
     if params["actuator"] == "thrusters":
         plot_thruster_firings(
             filename=f"{directory_path}thruster_firings.png",
@@ -603,13 +590,20 @@ def main():
             g=9.81,
             title=f"{actuator.capitalize()} - Propellant Consumption",
         )
-
     elif params["actuator"] == "reaction_wheel":
         plot_reaction_wheel_speeds(
             filename=f"{directory_path}reaction_wheel_speeds.png",
             time_vector=data_log["time"],
             reaction_wheel_log=data_log["w_bw"],
             title=f"{actuator.capitalize()} - Reaction Wheel Speeds",
+        )
+    elif params["actuator"] == "magnetic_torquer":
+        # --- New plotting for coil currents ---
+        plot_coil_currents(
+            filename=f"{directory_path}coil_currents.png",
+            time_vector=data_log["time"],
+            coil_currents_log=data_log["coil_currents"],
+            title=f"{actuator.capitalize()} - Coil Currents Over Time",
         )
 
     # Visualization (choose static scene or animation)
@@ -619,10 +613,9 @@ def main():
         plotter.show()
     else:
         filename = (
-            f"{directory_path}"
-            f"SatelliteAnimation_i{round(params['i'],2)}_omega{round(params['omega'],2)}"
-            f"_OMEGA{round(params['OMEGA'],2)}_q{np.round(params['q_od'],2)}_"
-            f"{round(t_span[1] / 3600,2)}h_{n_steps}steps.gif"
+            f"{directory_path}SatelliteAnimation_i{round(params['i'],2)}"
+            f"_omega{round(params['omega'],2)}_OMEGA{round(params['OMEGA'],2)}"
+            f"_q{np.round(params['q_od'],2)}_{round(t_span[1] / 3600,2)}h_{n_steps}steps.gif"
         )
         animate_satellite(result.t, data_log, filename)
 
